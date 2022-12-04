@@ -30,32 +30,40 @@ func (table *Table) GetName() string {
 	return table.create.Table.Name.String()
 }
 
-func (table *Table) GetInserts() []*sqlparser.Insert {
-	return table.inserts
+func (table *Table) getInsertValues(index int) (sqlparser.Values, int) {
+	if block, ok := table.inserts[index].Rows.(sqlparser.Values); ok {
+		return block, len(block)
+	} else {
+		panic(fmt.Errorf("unexpected row type %T", table.inserts[index].Rows))
+	}
 }
 
-func (table *Table) GetRows() sqlparser.Values {
-	rows := make(sqlparser.Values, 0)
-	for _, insert := range table.inserts {
-		if v, ok := insert.Rows.(sqlparser.Values); ok {
-			rows = append(rows, v...)
-		} else {
-			panic(fmt.Errorf("unexpected row type %T", insert.Rows))
-		}
-	}
-	return rows
+func emptyRowIterator() (sqlparser.ValTuple, bool) {
+	return nil, false
 }
 
-func (table *Table) GetRowCount() int {
-	var count int = 0
-	for _, insert := range table.inserts {
-		if v, ok := insert.Rows.(sqlparser.Values); ok {
-			count += len(v)
-		} else {
-			panic(fmt.Errorf("unexpected row type %T", insert.Rows))
-		}
+func (table *Table) RowIterator() func() (sqlparser.ValTuple, bool) {
+	blocks := len(table.inserts)
+	if blocks == 0 {
+		return emptyRowIterator
 	}
-	return count
+	bi := 0
+	ri := 0
+	block, rows := table.getInsertValues(bi)
+	return func() (sqlparser.ValTuple, bool) {
+		row := block[ri]
+		ri++
+		if ri == rows {
+			ri = 0
+			bi++
+			if bi < blocks {
+				block, rows = table.getInsertValues(bi)
+			} else {
+				block = nil
+			}
+		}
+		return row, ri < rows && bi < blocks
+	}
 }
 
 func (table *Table) getRowPK(row sqlparser.ValTuple) sqlparser.ValTuple {
@@ -89,34 +97,32 @@ func (table *Table) Compare(oldTable *Table) bool {
 			return false
 		}
 	}
-	rows := table.GetRows()
-	oldRows := oldTable.GetRows()
-	count := len(rows)
-	oldCount := len(oldRows)
-	r := 0
-	var oldR int
+	nextCurrent := table.RowIterator()
+	nextOld := oldTable.RowIterator()
 	same := true
-	for oldR = 0; r < count && oldR < oldCount; oldR++ {
-		if sqlparser.EqualsValTuple(rows[r], oldRows[oldR]) {
-			r++
-		} else if sqlparser.EqualsValTuple(table.getRowPK(rows[r]), oldTable.getRowPK(oldRows[oldR])) {
-			id := sqlparser.String(oldTable.getRowPK(oldRows[oldR]))
+	currentRow, okCurrent := nextCurrent()
+	oldRow, okOld := nextOld()
+	for ; okCurrent && okOld; oldRow, okOld = nextOld() {
+		if sqlparser.EqualsValTuple(currentRow, oldRow) {
+			currentRow, okCurrent = nextCurrent()
+		} else if sqlparser.EqualsValTuple(table.getRowPK(currentRow), oldTable.getRowPK(oldRow)) {
+			id := sqlparser.String(oldTable.getRowPK(oldRow))
 			fmt.Fprintf(os.Stdout, "row %s updated from %s\n", id, name)
 			same = false
-			r++
+			currentRow, okCurrent = nextCurrent()
 		} else {
-			id := sqlparser.String(oldTable.getRowPK(oldRows[oldR]))
+			id := sqlparser.String(oldTable.getRowPK(oldRow))
 			fmt.Fprintf(os.Stdout, "row %s deleted from %s\n", id, name)
 			same = false
 		}
 	}
-	for ; oldR < oldCount; oldR++ {
-		id := sqlparser.String(oldTable.getRowPK(oldRows[oldR]))
+	for ; okOld; oldRow, okOld = nextOld() {
+		id := sqlparser.String(oldTable.getRowPK(oldRow))
 		fmt.Fprintf(os.Stdout, "row %s deleted from %s\n", id, name)
 		same = false
 	}
-	for ; r < count; r++ {
-		id := sqlparser.String(table.getRowPK(rows[r]))
+	for ; okCurrent; currentRow, okCurrent = nextCurrent() {
+		id := sqlparser.String(table.getRowPK(currentRow))
 		fmt.Fprintf(os.Stdout, "row %s inserted into %s\n", id, name)
 		same = false
 	}
