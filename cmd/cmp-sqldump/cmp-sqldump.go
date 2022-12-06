@@ -6,32 +6,55 @@ import (
 	"log"
 	"os"
 	"path"
+	"regexp"
 	"sort"
 
 	"github.com/jonestimd/sqltools/internal/sqldump"
 )
 
+var filenameRegex = regexp.MustCompile("(.bz2)?$")
+
 func main() {
-	sortFiles := flag.Bool("s", false, "sort file names and process in reverse order")
-	flag.Parse()
+	flagSet := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	flagSet.Usage = func() {
+		fmt.Fprintf(flagSet.Output(), "Usage: %s [options] file1 file2 ...\nOptions:\n", os.Args[0])
+		flagSet.PrintDefaults()
+	}
+	sortFiles := flagSet.Bool("sort", false, "sort file names and process in reverse order")
+	noSave := flagSet.Bool("no-save", false, "write diff(s) to stdout")
+	outputSuffix := flagSet.String("o", ".diff", "output file suffix")
+	flagSet.Parse(os.Args[1:])
 	log.SetOutput(os.Stderr)
-	if len(flag.Args()) < 2 {
+	if len(flagSet.Args()) < 2 {
 		fmt.Fprintf(os.Stderr, "need at least 2 input files\n")
-		flag.Usage()
+		flagSet.Usage()
 		os.Exit(1)
 	}
 	if *sortFiles {
-		sort.Sort(sort.Reverse(sort.StringSlice(flag.Args())))
+		sort.Sort(sort.Reverse(sort.StringSlice(flagSet.Args())))
 	}
-	currentName := flag.Arg(0)
+	currentName := flagSet.Arg(0)
 	current := sqldump.NewSqlDump(currentName)
-	for _, filename := range flag.Args()[1:] {
-		fmt.Fprintf(os.Stderr, "%s:\n", currentName)
-		previous := sqldump.NewSqlDump(filename)
-		if current.Compare(previous) {
-			fmt.Fprintf(os.Stderr, "no change for %s and %s\n", path.Base(currentName), path.Base(filename))
+	for _, oldName := range flagSet.Args()[1:] {
+		previous := sqldump.NewSqlDump(oldName)
+		tableChanges := current.Compare(previous)
+		if len(tableChanges) == 0 {
+			fmt.Fprintf(os.Stderr, "no change for %s and %s\n", path.Base(currentName), path.Base(oldName))
+		} else {
+			fmt.Fprintf(os.Stderr, "changes for %s and %s\n", path.Base(currentName), path.Base(oldName))
+			var err error
+			outfile := os.Stdout
+			for _, tc := range tableChanges {
+				if !*noSave {
+					outfileName := filenameRegex.ReplaceAllString(currentName, *outputSuffix)
+					if outfile, err = os.OpenFile(outfileName, os.O_CREATE|os.O_EXCL, 0666); err != nil {
+						panic(fmt.Errorf("error creating file %s - %v", oldName, err))
+					}
+				}
+				tc.Write(outfile)
+			}
 		}
-		currentName = filename
+		currentName = oldName
 		current = previous
 	}
 }

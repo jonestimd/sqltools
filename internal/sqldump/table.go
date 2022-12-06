@@ -15,9 +15,16 @@ type Table struct {
 
 func NewTable(create *sqlparser.CreateTable) *Table {
 	pkColumns := make([]int, 0)
-	for i, index := range create.TableSpec.Indexes {
+	for _, index := range create.TableSpec.Indexes {
 		if index.Info.Primary {
-			pkColumns = append(pkColumns, i)
+			for _, indexColumn := range index.Columns {
+				name := indexColumn.Column
+				for ci, tableColumn := range create.TableSpec.Columns {
+					if sqlparser.EqualsIdentifierCI(name, tableColumn.Name) {
+						pkColumns = append(pkColumns, ci)
+					}
+				}
+			}
 		}
 	}
 	if len(pkColumns) == 0 {
@@ -77,54 +84,43 @@ func (table *Table) getRowPK(row sqlparser.ValTuple) sqlparser.ValTuple {
 	return pk
 }
 
-func (table *Table) Compare(oldTable *Table) bool {
+func (table *Table) Compare(oldTable *Table) *TableChanges {
 	name := table.GetName()
 	if name != oldTable.GetName() {
 		panic(fmt.Errorf("different table names %s vs %s", name, oldTable.GetName()))
 	}
 	if len(table.create.TableSpec.Columns) != len(oldTable.create.TableSpec.Columns) {
-		fmt.Fprintf(os.Stderr, "different column count for %s\n", name)
-		return false
+		panic(fmt.Errorf("different column count for %s\n", name))
 	}
 	for c, col := range table.create.TableSpec.Columns {
 		col2 := oldTable.create.TableSpec.Columns[c]
 		if !col.Name.Equal(col2.Name) {
-			fmt.Fprintf(os.Stderr, "different columns for %s\n", name)
-			return false
+			panic(fmt.Errorf("different columns for %s\n", name))
 		}
 		if col.Type.SQLType() != col2.Type.SQLType() {
-			fmt.Fprintf(os.Stderr, "different type for %s.%s\n", name, col.Name.String())
-			return false
+			panic(fmt.Errorf("different type for %s.%s\n", name, col.Name.String()))
 		}
 	}
 	nextCurrent := table.RowIterator()
 	nextOld := oldTable.RowIterator()
-	same := true
+	changes := &TableChanges{table: table}
 	currentRow, okCurrent := nextCurrent()
 	oldRow, okOld := nextOld()
 	for ; okCurrent && okOld; oldRow, okOld = nextOld() {
 		if sqlparser.EqualsValTuple(currentRow, oldRow) {
 			currentRow, okCurrent = nextCurrent()
 		} else if sqlparser.EqualsValTuple(table.getRowPK(currentRow), oldTable.getRowPK(oldRow)) {
-			id := sqlparser.String(oldTable.getRowPK(oldRow))
-			fmt.Fprintf(os.Stdout, "row %s updated from %s\n", id, name)
-			same = false
+			changes.updates = append(changes.updates, &TableUpdate{oldRow, currentRow})
 			currentRow, okCurrent = nextCurrent()
 		} else {
-			id := sqlparser.String(oldTable.getRowPK(oldRow))
-			fmt.Fprintf(os.Stdout, "row %s deleted from %s\n", id, name)
-			same = false
+			changes.deletes = append(changes.deletes, oldRow)
 		}
 	}
 	for ; okOld; oldRow, okOld = nextOld() {
-		id := sqlparser.String(oldTable.getRowPK(oldRow))
-		fmt.Fprintf(os.Stdout, "row %s deleted from %s\n", id, name)
-		same = false
+		changes.deletes = append(changes.deletes, oldRow)
 	}
 	for ; okCurrent; currentRow, okCurrent = nextCurrent() {
-		id := sqlparser.String(table.getRowPK(currentRow))
-		fmt.Fprintf(os.Stdout, "row %s inserted into %s\n", id, name)
-		same = false
+		changes.inserts = append(changes.inserts, currentRow)
 	}
-	return same
+	return changes
 }

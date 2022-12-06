@@ -3,9 +3,11 @@ package sqldump
 import (
 	"compress/bzip2"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 
 	"vitess.io/vitess/go/vt/sqlparser"
 )
@@ -18,10 +20,17 @@ func checkErr(err error) {
 	}
 }
 
-func NewSqlDump(filename string) SqlDump {
+func openFile(filename string) io.Reader {
 	raw, err := os.Open(filename)
 	checkErr(err)
-	buf, err := ioutil.ReadAll(bzip2.NewReader(raw))
+	if strings.HasSuffix(filename, ".bz2") {
+		return bzip2.NewReader(raw)
+	}
+	return raw
+}
+
+func NewSqlDump(filename string) SqlDump {
+	buf, err := ioutil.ReadAll(openFile(filename))
 	checkErr(err)
 	lines, err := sqlparser.SplitStatementToPieces(string(buf))
 	checkErr(err)
@@ -59,17 +68,19 @@ func (dump SqlDump) GetTable(name string) *Table {
 	return nil
 }
 
-func (dump SqlDump) Compare(oldDump SqlDump) bool {
-	same := true
+func (dump SqlDump) Compare(oldDump SqlDump) []*TableChanges {
+	changes := make([]*TableChanges, 0)
 	for _, table := range dump {
 		oldTable := oldDump.GetTable(table.GetName())
 		if oldTable == nil {
 			fmt.Fprintf(os.Stderr, "table added %s", table.GetName())
-			same = false
-			// TODO output create table and inserts
+			changes = append(changes, &TableChanges{new: true, table: table})
 		} else {
-			same = table.Compare(oldTable) && same
+			change := table.Compare(oldTable)
+			if !change.IsEmpty() {
+				changes = append(changes, change)
+			}
 		}
 	}
-	return same
+	return changes
 }
