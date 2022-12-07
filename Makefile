@@ -12,5 +12,5 @@ cmp-sqldump: $(go_sources)
 clean:
 	rm -f cmp-sqldump cover.out coverage/go-coverage.html
 
-# install: cmp-sqldump
-# 	go install ./cmd/cmp-sqldump/
+install: cmp-sqldump
+	go install ./cmd/cmp-sqldump/
