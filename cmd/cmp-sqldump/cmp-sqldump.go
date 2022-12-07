@@ -44,14 +44,17 @@ func main() {
 			fmt.Fprintf(os.Stderr, "changes for %s and %s\n", path.Base(currentName), path.Base(oldName))
 			var err error
 			outfile := os.Stdout
-			for _, tc := range tableChanges {
-				if !*noSave {
-					outfileName := filenameRegex.ReplaceAllString(currentName, *outputSuffix)
-					if outfile, err = os.OpenFile(outfileName, os.O_CREATE|os.O_EXCL, 0666); err != nil {
-						panic(fmt.Errorf("error creating file %s - %v", oldName, err))
-					}
+			if !*noSave {
+				outfileName := filenameRegex.ReplaceAllString(currentName, *outputSuffix)
+				if outfile, err = os.OpenFile(outfileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666); err != nil {
+					panic(fmt.Errorf("error creating file %s - %v", outfileName, err))
 				}
+			}
+			for _, tc := range tableChanges {
 				tc.Write(outfile)
+			}
+			if !*noSave {
+				outfile.Close()
 			}
 		}
 		currentName = oldName
